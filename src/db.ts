@@ -10,10 +10,13 @@ export const pool = new pg.Pool({
 export type Db = pg.Pool | pg.PoolClient;
 
 // Runs fn inside BEGIN/COMMIT on one connection. Any thrown error rolls everything back.
-export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+export async function withTransaction<T>(
+  fn: (client: pg.PoolClient) => Promise<T>,
+  begin = "BEGIN",
+): Promise<T> {
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query(begin);
     const result = await fn(client);
     await client.query("COMMIT");
     return result;

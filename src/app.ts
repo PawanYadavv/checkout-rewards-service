@@ -16,6 +16,11 @@ export function createApp() {
     res.json({ status: "ok" });
   });
 
+  app.get("/products", async (_req, res) => {
+    const { rows } = await pool.query("SELECT id, name, price_paise, inventory FROM products ORDER BY id");
+    res.json(rows.map((p) => ({ id: p.id, name: p.name, pricePaise: p.price_paise, inventory: p.inventory })));
+  });
+
   app.use("/carts", cartsRouter);
   app.use("/orders", ordersRouter);
   app.use("/admin", adminRouter);

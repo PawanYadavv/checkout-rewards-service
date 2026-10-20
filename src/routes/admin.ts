@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { pool } from "../db.js";
 import { generateCoupon } from "../coupons.js";
+import { getReport } from "../report.js";
 
 // ADMINISTRATIVE routes. No auth (allowed by the brief); in production these need it.
 export const adminRouter = Router();
@@ -23,4 +24,8 @@ adminRouter.get("/coupons", async (_req, res) => {
       createdAt: c.created_at,
     })),
   );
+});
+
+adminRouter.get("/report", async (_req, res) => {
+  res.json(await getReport());
 });

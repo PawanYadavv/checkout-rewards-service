@@ -1,31 +1,11 @@
 import { afterAll, beforeEach, expect, test } from "vitest";
 import request from "supertest";
-import { randomUUID } from "node:crypto";
-import { createApp } from "../src/app.js";
 import { pool } from "../src/db.js";
 import { resetDb } from "../src/resetDb.js";
-
-const app = createApp();
+import { app, cartWith, checkout, inventory } from "./helpers.js";
 
 beforeEach(() => resetDb());
 afterAll(() => pool.end());
-
-async function cartWith(items: Record<string, number>): Promise<string> {
-  const id = (await request(app).post("/carts")).body.id;
-  for (const [productId, quantity] of Object.entries(items)) {
-    await request(app).post(`/carts/${id}/items`).send({ productId, quantity });
-  }
-  return id;
-}
-
-function checkout(cartId: string, key: string = randomUUID()) {
-  return request(app).post(`/carts/${cartId}/checkout`).set("Idempotency-Key", key);
-}
-
-async function inventory(productId: string): Promise<number> {
-  const { rows } = await pool.query("SELECT inventory FROM products WHERE id = $1", [productId]);
-  return rows[0].inventory;
-}
 
 test("checkout creates an order, takes stock and closes the cart", async () => {
   const cartId = await cartWith({ p_mouse: 2, p_cable: 1 });
@@ -130,4 +110,27 @@ test("a failed checkout does not burn the key: fix the cart and retry with the s
   await request(app).delete(`/carts/${a}/items/p_lamp`);
   await request(app).post(`/carts/${a}/items`).send({ productId: "p_mouse", quantity: 1 });
   expect((await checkout(a, "key-a")).status).toBe(201);
+});
+
+test("price change before checkout: cart shows and checkout charges the new price", async () => {
+  const cartId = await cartWith({ p_mouse: 1 });
+  await pool.query("UPDATE products SET price_paise = 120000 WHERE id = 'p_mouse'");
+
+  expect((await request(app).get(`/carts/${cartId}`)).body.subtotalPaise).toBe(120000);
+  expect((await checkout(cartId)).body.totalPaise).toBe(120000);
+});
+
+test("item added while checkout runs is either in the order or rejected, never lost", async () => {
+  for (let i = 0; i < 10; i++) {
+    const cartId = await cartWith({ p_mouse: 1 });
+
+    const [order, add] = await Promise.all([
+      checkout(cartId),
+      request(app).post(`/carts/${cartId}/items`).send({ productId: "p_cable", quantity: 1 }),
+    ]);
+
+    const cableInOrder = order.body.items.some((i: any) => i.productId === "p_cable");
+    if (add.status === 200) expect(cableInOrder).toBe(true); // add won the cart lock first
+    else expect(add.body.error.code).toBe("CART_NOT_OPEN"); // checkout won; add was refused
+  }
 });

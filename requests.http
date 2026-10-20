@@ -170,3 +170,11 @@ Idempotency-Key: coupon-try-1
 Content-Type: application/json
 
 { "couponCode": "{{gen.response.body.code}}" }
+
+### ---------- REPORT (Step 8) ----------
+
+### 25. ADMIN: report
+# Expect: 200 with totalOrders, grossRevenuePaise, totalDiscountPaise, netRevenuePaise,
+#         coupons { generated, available, redeemed }, quantitySoldByProduct
+# Code: routes/admin.ts -> report.ts getReport (read-only, one snapshot)
+GET {{base}}/admin/report
