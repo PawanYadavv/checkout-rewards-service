@@ -123,7 +123,7 @@ Working notes; becomes DECISIONS.md in Step 10.
 **Choice:** (a)
 - Same key + same cart → original order, no new side effects; response is the same 201 body plus `Idempotent-Replayed: true`.
 - Same key + different cart → `422 IDEMPOTENCY_KEY_REUSED`.
-- New key on checked-out cart → `409 CART_ALREADY_CHECKED_OUT`.
+- New key on checked-out cart → `409 CART_NOT_OPEN` (same code as editing a checked-out cart).
 - The key is inserted inside the checkout transaction, so failed checkouts are not remembered and can be retried with the same key.
 
 **Why:** Distinguishes a genuine retry from a conflicting request; the DB unique constraint handles concurrent duplicates.
@@ -201,3 +201,39 @@ Working notes; becomes DECISIONS.md in Step 10.
 **Why:** Unguessable cart/order IDs without auth; readable seeds and curl examples.
 
 **Consequences:** Real deployment needs auth on `/admin/*`.
+
+## Decision: Idempotency lookup happens after the cart lock
+
+**Context:** Two retries with the same key can arrive at the same moment.
+
+**Options considered:** (a) look up the key before locking; (b) lock the cart first, then look up the key.
+
+**Choice:** (b) `lockCart` → look up order by key → only then check the cart is open.
+
+**Why:** With (a), both retries see "no order yet"; the second then waits on the lock and gets `409 CART_NOT_OPEN` instead of its order. With (b), the second waits, then finds the order the first one committed and replays it. Same key on two *different* carts at the same moment is caught by `UNIQUE(idempotency_key)` and mapped to 422.
+
+**Consequences:** The request body is not fingerprinted: a retry with the same key but a different coupon gets the original order back. Acceptable because the key means "same attempt"; documented.
+
+## Decision: Milestone counting and concurrent coupon generation
+
+**Context:** Two admins may request generation at the same moment; n may be changed by config.
+
+**Options considered:** (a) next milestone = smallest unrewarded multiple of n; (b) next milestone = last rewarded milestone + n. For concurrency: (i) rely on `UNIQUE(milestone)` and map the error; (ii) serialize generation with `pg_advisory_xact_lock`.
+
+**Choice:** (b) + (ii), with `UNIQUE(milestone)` as backup.
+
+**Why:** (b) stays sensible when n changes live ("n more orders since the last reward"). The advisory lock makes the second admin wait and then see the first coupon, giving a clean 409 instead of a constraint error.
+
+**Consequences:** Generation is serialized (fine: rare admin action). Changing n affects only future milestones.
+
+## Decision: Coupon redeemed early in the checkout transaction
+
+**Context:** A coupon must not be lost by a checkout that fails, and must not be used twice concurrently.
+
+**Options considered:** (a) check the coupon, redeem after the order is saved; (b) redeem with a conditional `UPDATE … WHERE redeemed_at IS NULL` inside the checkout transaction.
+
+**Choice:** (b), done right after locking the cart, before taking stock.
+
+**Why:** The conditional UPDATE is atomic: a second checkout waits on the row lock and then sees it redeemed (409). Any later failure (e.g. out of stock) rolls back the redemption. Lock order is always cart → coupon → products, so no deadlocks.
+
+**Consequences:** Tests prove both concurrent-use and failed-checkout cases.

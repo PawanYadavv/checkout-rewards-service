@@ -3,6 +3,8 @@ import { pool, withTransaction } from "../db.js";
 import { AppError } from "../errors.js";
 import { ensureStock, getCartView, lockOpenCart, parseCartId } from "../cart.js";
 import { MAX_QUANTITY, requireProductId, requireQuantity } from "../validate.js";
+import { checkout } from "../checkout.js";
+import { getOrderView } from "../order.js";
 
 export const cartsRouter = Router();
 
@@ -81,3 +83,31 @@ cartsRouter.delete("/:cartId/items/:productId", async (req, res) => {
   res.json(cart);
 });
 
+
+// Checkout. A retry with the same Idempotency-Key gets the same order back.
+cartsRouter.post("/:cartId/checkout", async (req, res) => {
+  const cartId = parseCartId(req.params.cartId);
+  const key = req.get("Idempotency-Key");
+  if (!key || key.length > 255) {
+    throw new AppError(400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key header is required (max 255 chars)");
+  }
+  const couponCode = req.body?.couponCode;
+  if (couponCode !== undefined && (typeof couponCode !== "string" || couponCode.trim() === "")) {
+    throw new AppError(400, "VALIDATION_ERROR", "couponCode must be a non-empty string");
+  }
+
+  let result;
+  try {
+    result = await checkout(cartId, key, couponCode);
+  } catch (err: any) {
+    // Rare race: the same key used on two DIFFERENT carts at the same moment.
+    // Both pass the lookup; the UNIQUE constraint on orders.idempotency_key stops the second.
+    if (err.code === "23505" && err.constraint === "orders_idempotency_key_key") {
+      throw new AppError(422, "IDEMPOTENCY_KEY_REUSED", "This Idempotency-Key was already used for another cart");
+    }
+    throw err;
+  }
+
+  if (result.replayed) res.set("Idempotent-Replayed", "true");
+  res.status(201).json(await getOrderView(pool, result.orderId));
+});

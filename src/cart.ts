@@ -1,22 +1,26 @@
 import type pg from "pg";
 import type { Db } from "./db.js";
 import { AppError } from "./errors.js";
+import { isUuid } from "./validate.js";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// A badly formed id can never match a cart, so treat it as "not found"
-// (otherwise Postgres throws "invalid input syntax for type uuid" -> 500).
+// A badly formed id can never match a cart, so treat it as "not found".
 export function parseCartId(value: string): string {
-  if (!UUID_RE.test(value)) throw new AppError(404, "CART_NOT_FOUND", "Cart not found");
+  if (!isUuid(value)) throw new AppError(404, "CART_NOT_FOUND", "Cart not found");
   return value;
 }
 
-// Locks the cart row until the transaction ends. Every cart change and checkout
-// calls this first, so they run one at a time per cart and see the latest status.
-export async function lockOpenCart(client: pg.PoolClient, cartId: string) {
+// Locks the cart row until the transaction ends and returns its status.
+// Every cart change and checkout calls this first, so they run one at a time
+// per cart and see the latest status.
+export async function lockCart(client: pg.PoolClient, cartId: string): Promise<string> {
   const { rows } = await client.query("SELECT status FROM carts WHERE id = $1 FOR UPDATE", [cartId]);
   if (rows.length === 0) throw new AppError(404, "CART_NOT_FOUND", "Cart not found");
-  if (rows[0].status !== "open") throw new AppError(409, "CART_NOT_OPEN", "Cart is already checked out");
+  return rows[0].status;
+}
+
+export async function lockOpenCart(client: pg.PoolClient, cartId: string) {
+  const status = await lockCart(client, cartId);
+  if (status !== "open") throw new AppError(409, "CART_NOT_OPEN", "Cart is already checked out");
 }
 
 // Soft stock check when editing a cart. Checkout does the real, race-safe check.

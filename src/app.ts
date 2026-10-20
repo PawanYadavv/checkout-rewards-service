@@ -2,6 +2,8 @@ import express from "express";
 import { pool } from "./db.js";
 import { errorHandler, notFoundHandler } from "./errors.js";
 import { cartsRouter } from "./routes/carts.js";
+import { ordersRouter } from "./routes/orders.js";
+import { adminRouter } from "./routes/admin.js";
 
 // Builds the app but does not start a server (server.ts does that).
 // Tests pass this app to Supertest, which sends requests to it directly.
@@ -15,6 +17,8 @@ export function createApp() {
   });
 
   app.use("/carts", cartsRouter);
+  app.use("/orders", ordersRouter);
+  app.use("/admin", adminRouter);
 
   // These two must stay last: they only run if nothing above handled the request.
   app.use(notFoundHandler);

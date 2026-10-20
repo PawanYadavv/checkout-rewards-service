@@ -1,0 +1,172 @@
+### HOW TO USE
+# 1. Install VS Code extension "REST Client" (by Huachao Mao)
+# 2. Terminal: npm run db:reset   then   npm run dev
+# 3. Click "Send Request" above each request, top to bottom.
+
+@base = http://localhost:3000
+
+### 1. Health check
+# Expect: 200 {"status":"ok"}
+# Code: app.ts -> /health -> SELECT 1
+GET {{base}}/health
+
+### 2. Create a cart  (run this first: the cart id is saved for the next requests)
+# Expect: 201, empty items, subtotalPaise 0
+# Code: routes/carts.ts POST "/" -> INSERT INTO carts -> getCartView
+# @name createCart
+POST {{base}}/carts
+
+###
+@cartId = {{createCart.response.body.id}}
+
+### 3. Add 2 mice
+# Expect: 200, quantity 2, subtotalPaise 199800 (2 x 99900)
+# Code: POST "/:cartId/items" -> lockOpenCart -> ensureStock -> INSERT
+POST {{base}}/carts/{{cartId}}/items
+Content-Type: application/json
+
+{ "productId": "p_mouse", "quantity": 2 }
+
+### 4. Add 1 more mouse (send again!)
+# Expect: quantity becomes 3 (added together, not replaced)
+POST {{base}}/carts/{{cartId}}/items
+Content-Type: application/json
+
+{ "productId": "p_mouse", "quantity": 1 }
+
+### 5. View the cart
+# Expect: 200, same cart, today's prices
+# Code: GET "/:cartId" -> getCartView
+GET {{base}}/carts/{{cartId}}
+
+### 6. Change quantity to exactly 5
+# Expect: quantity 5, subtotalPaise 499500
+# Code: PATCH -> lockOpenCart -> ensureStock -> UPDATE
+PATCH {{base}}/carts/{{cartId}}/items/p_mouse
+Content-Type: application/json
+
+{ "quantity": 5 }
+
+### 7. Remove the mouse
+# Expect: items [] and subtotalPaise 0
+# Code: DELETE -> lockOpenCart -> DELETE
+DELETE {{base}}/carts/{{cartId}}/items/p_mouse
+
+### ---------- ERRORS: try to break it ----------
+
+### 8. Bad quantity (try 0, -1, 1.5, "2")
+# Expect: 400 VALIDATION_ERROR
+# Code: validate.ts requireQuantity
+POST {{base}}/carts/{{cartId}}/items
+Content-Type: application/json
+
+{ "productId": "p_mouse", "quantity": 1.5 }
+
+### 9. Product that does not exist
+# Expect: 404 PRODUCT_NOT_FOUND
+# Code: cart.ts ensureStock
+POST {{base}}/carts/{{cartId}}/items
+Content-Type: application/json
+
+{ "productId": "p_banana", "quantity": 1 }
+
+### 10. More than stock (lamp has only 2)
+# Expect: 409 INSUFFICIENT_STOCK, details show requested 3 / available 2
+# Code: cart.ts ensureStock
+POST {{base}}/carts/{{cartId}}/items
+Content-Type: application/json
+
+{ "productId": "p_lamp", "quantity": 3 }
+
+### 11. Bad cart id
+# Expect: 404 CART_NOT_FOUND (not 500!)
+# Code: cart.ts parseCartId (UUID_RE)
+GET {{base}}/carts/abc
+
+### 12. Broken JSON
+# Expect: 400 INVALID_JSON
+# Code: errors.ts errorHandler
+POST {{base}}/carts/{{cartId}}/items
+Content-Type: application/json
+
+{ "productId": "p_mouse",
+
+### 13. URL that does not exist
+# Expect: 404 NOT_FOUND
+# Code: errors.ts notFoundHandler
+GET {{base}}/hello
+
+### ---------- CHECKOUT (Step 5) ----------
+
+### 14. Add 1 lamp, then check out
+# Code: POST "/:cartId/items"
+POST {{base}}/carts/{{cartId}}/items
+Content-Type: application/json
+
+{ "productId": "p_lamp", "quantity": 1 }
+
+### 15. Checkout
+# Expect: 201, an order with items, subtotalPaise, totalPaise
+# Code: routes/carts.ts POST "/:cartId/checkout" -> checkout.ts checkout() -> order.ts getOrderView
+# @name doCheckout
+POST {{base}}/carts/{{cartId}}/checkout
+Idempotency-Key: change-me-each-time-1
+
+### 16. View the order
+# Expect: 200, same order as above
+# Code: routes/orders.ts -> getOrderView
+GET {{base}}/orders/{{doCheckout.response.body.id}}
+
+### 17. Checkout the same cart again with a NEW key
+# Expect: 409 CART_NOT_OPEN
+POST {{base}}/carts/{{cartId}}/checkout
+Idempotency-Key: change-me-each-time-2
+
+### 18. Edit the cart after checkout
+# Expect: 409 CART_NOT_OPEN
+POST {{base}}/carts/{{cartId}}/items
+Content-Type: application/json
+
+{ "productId": "p_mouse", "quantity": 1 }
+
+### ---------- SAFE RETRY (Step 6) ----------
+
+### 19. Retry checkout with the SAME key as request 15
+# Expect: 201, the SAME order id as request 15, header Idempotent-Replayed: true
+# Code: checkout.ts step 1b (finds the order for this key, changes nothing)
+POST {{base}}/carts/{{cartId}}/checkout
+Idempotency-Key: change-me-each-time-1
+
+
+### ---------- COUPONS (Step 7) ----------
+# Default rule: every 5 orders -> one 10% coupon.
+# To earn one: repeat requests 2 -> 14 -> 15 five times (change the Idempotency-Key each time),
+# or just run 20 now and see the 409 that says how many orders are still needed.
+
+### 20. ADMIN: generate a coupon
+# Expect: 201 { code, milestone, percentOff }   or   409 NO_ELIGIBLE_MILESTONE (details: orderCount, nextMilestone)
+# Code: routes/admin.ts -> coupons.ts generateCoupon
+# @name gen
+POST {{base}}/admin/coupons
+
+### 21. ADMIN: list coupons (available / redeemed)
+GET {{base}}/admin/coupons
+
+### 22. New cart for the coupon order
+# @name couponCart
+POST {{base}}/carts
+
+### 23. Add a cable (29999 paise)
+POST {{base}}/carts/{{couponCart.response.body.id}}/items
+Content-Type: application/json
+
+{ "productId": "p_cable", "quantity": 1 }
+
+### 24. Checkout WITH the coupon
+# Expect: 201, discountPaise 2999, totalPaise 27000
+# Code: checkout.ts step 2b redeemCoupon -> step 4 calculateDiscount
+POST {{base}}/carts/{{couponCart.response.body.id}}/checkout
+Idempotency-Key: coupon-try-1
+Content-Type: application/json
+
+{ "couponCode": "{{gen.response.body.code}}" }
