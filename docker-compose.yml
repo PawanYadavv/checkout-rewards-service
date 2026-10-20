@@ -1,0 +1,10 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: checkout
+    # Host port 5433 avoids clashing with a locally installed Postgres on 5432.
+    ports:
+      - "5433:5432"
